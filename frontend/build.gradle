@@ -1,0 +1,41 @@
+plugins {
+    id 'base'
+    id 'com.github.node-gradle.node' version '7.1.0'
+}
+
+node {
+    version = '20.11.1'
+    npmVersion = '10.2.4'
+    download = true
+}
+
+tasks.register('npmClean', Delete) {
+    group 'npm'
+    delete "${project.rootDir}/frontend/dist"
+    delete "${project.rootDir}/backend/src/main/resources/static"
+}
+
+tasks.register('npmBuild', NpmTask) {
+    args = ['run', 'build']
+    dependsOn npmInstall
+}
+
+tasks.register('npmDev', NpmTask) {
+    args = ['run', 'dev']
+    dependsOn npmInstall
+}
+
+tasks.register('npmPreview', NpmTask) {
+    args = ['run', 'preview']
+}
+
+tasks.register('npmPackage', Copy) {
+    group 'npm'
+    from file("${project.rootDir}/frontend/dist")
+    into file("${project.rootDir}/backend/src/main/resources/static")
+    dependsOn npmBuild
+}
+
+assemble.dependsOn npmBuild
+assemble.finalizedBy npmPackage
+clean.dependsOn npmClean

@@ -1,0 +1,13 @@
+plugins {
+    id 'java'
+}
+
+subprojects {
+
+    group = 'de.wehrspann'
+    version = '1.0-SNAPSHOT'
+
+    repositories {
+        mavenCentral()
+    }
+}

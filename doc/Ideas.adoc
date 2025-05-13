@@ -1,0 +1,138 @@
+# Project: Application-Template
+:toc:
+:toc-title: Table of Contents
+
+toc::[]
+
+## Build Application
+
+Build and package the application. This builds the backend and the frontend and copies the frontend artifacts into the resources/static directory of the backend.
+
+[source,console]
+----
+./gradlew build
+----
+
+This runs the application. The frontend is served by the backend.
+
+[source,console]
+----
+./gradlew bootRun
+----
+
+To delete the dist directory of the frontend with the build artifact and it's copy in resources/static of the backenb, you can run clean.
+
+[source,console]
+----
+./gradlew clean
+----
+
+
+## Infrastructure
+
+## Project Planning
+
+* Github Projects
+
+## Build System
+
+* Gradle (Plugin configuration in separate files)
+* GitHub
+** Actions
+** https://docs.github.com/de/code-security/getting-started/dependabot-quickstart-guide[Dependabot]
+** Container Registry
+
+### Github
+
+#### Branching Strategy
+
+* master
+* feature/Ticket number
+
+PRs are build and deployed to stating and after merge to master deployed to production
+
+#### Versioning / Releases
+
+----
+MAJOR.MINOR.PATCH[-QUALIFIER]
+----
+- **MAJOR**: Incompatible API Changes
+- **MINOR**: New Functions (backwards compatible)
+- **PATCH**: Bugfixes (backwards compatible)
+- **QUALIFIER**: Optional (z.B. -SNAPSHOT, -RC1)
+
+## Logging / Monitoring
+
+* https://uptime.kuma.pet/[Uptime Kuma] or https://checkmate.so/[Checkmate]
+* Sentry or https://glitchtip.com/[GlitchTip]
+
+## Runtime Environment
+
+* https://www.coolify.io/[Coolify]
+* Docker
+
+## Architecture
+
+### General
+
+* Feature Based Structure
+* https://medium.com/javarevisited/rich-domain-model-with-hibernate-f012d5413d38[Rich Domain Model]
+* https://medium.com/glovo-engineering/javas-default-access-7153b476ff5d[Use of Package Private classes when possible]
+
+### Directory Structure
+
+[listing]
+----
+├───.github
+│   └───workflows
+├───doc
+├───etc
+│   ├───checkstyle
+│   └───gradle
+└───src
+    ├───main
+    │   ├───java
+    │   │   └───de
+    │   │       └───wehrspann
+    │   │           └───template
+    │   └───resources
+    │       ├───db
+    │       │   └───migration
+    │       ├───static
+    │       └───templates
+    └───test
+        └───java
+            └───de
+                └───wehrspann
+                    └───template
+----
+
+### Clock
+
+The ClockProvider is used to provide a centralized and testable source of the current time, allowing easier management of time-related logic and enabling time manipulation during testing.
+
+See: https://sahan-r.medium.com/time-travel-in-spring-boot-6bba96d38e03[Time Travel in Spring Boot]
+
+[source,java]
+----
+private final ClockProvider clockProvider;
+
+public Constructor(ClockProvider clockProvider) {
+    this.clockProvider = clockProvider;
+}
+
+public void method() {
+    Instant now = clockProvider.getClock();
+}
+----
+
+### Features
+
+* User Authentication
+* MultiFactorAuthentication (MFA)
+* PassKeys (?)
+* Authentication via Google, Github
+
+### Testing
+
+* automatic unit, integration and performance tests

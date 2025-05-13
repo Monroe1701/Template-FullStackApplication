@@ -1,0 +1,197 @@
+name: CD
+
+# TRIGGER --------------
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (z.B. 1.0.0)'
+        required: true
+        type: string
+      environment:
+        description: 'Zielumgebung (Staging oder Production)'
+        required: true
+        type: choice
+        default: 'Staging'
+        options:
+          - Staging
+          - Production
+  release:
+    types: [published]
+
+# JOBS -----------------
+jobs:
+  project-build:
+    runs-on: ubuntu-latest
+    outputs:
+      VERSION: ${{ steps.get_version.outputs.VERSION }}
+
+    steps:
+      ## CHECKOUT
+      - uses: actions/checkout@v4
+
+      ## SETUP VERSION NUMBER
+      - name: Get Version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            # Release-Tag bereinigen (v1.0.0 -> 1.0.0)
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"
+            echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Version in build.gradle
+        run: |
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          sed -i "s/version = '[^']*'/version = '${VERSION}'/g" build.gradle
+          cat build.gradle | grep "version ="
+
+      ## SETUP JDK
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      ## SETUP GRADLE
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - run: chmod +x gradlew
+
+      ## RUN CHECKSTYLE
+      - name: Checkstyle-Prüfung
+        run: ./gradlew checkstyleMain checkstyleTest
+
+      - name: Checkstyle-Report hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkstyle-report
+          path: build/reports/checkstyle/
+
+      ## RUN TEST COVERAGE
+      - name: Tests mit JaCoCo ausführen
+        run: ./gradlew test jacocoTestReport
+
+      - name: JaCoCo-Testabdeckungs-Report hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: build/reports/jacoco/
+
+      - name: Check JaCoCo test coverage
+        run: ./gradlew jacocoTestCoverageVerification
+
+      ## BUILD
+      - name: Build mit Gradle
+        run: ./gradlew build -x test
+
+      ## SETUP DOCKER
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Anmeldung bei GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata für Docker extrahieren
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.get_version.outputs.VERSION }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.get_version.outputs.VERSION }}
+            type=semver,pattern={{major}},value=${{ steps.get_version.outputs.VERSION }}
+            latest
+
+      ## BUILD DOCKER
+      - name: Docker Image bauen und pushen
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.get_version.outputs.VERSION }}
+
+      - name: Commit neue Version
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          git add build.gradle
+          git commit -m "Version auf ${{ steps.get_version.outputs.VERSION }} aktualisiert" || echo "Keine Änderungen zum committen"
+          git push
+
+      ## CREATE RELEASE NOTES
+      - name: Release Notes generieren
+        id: generate-notes
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: mikepenz/release-changelog-builder-action@v4
+        with:
+          configuration: ".github/changelog-config.json"
+          toTag: ${{ steps.get_version.outputs.VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      ## CREATE RELEASE
+      - name: GitHub Release erstellen
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release v${{ steps.get_version.outputs.VERSION }}
+          tag_name: v${{ steps.get_version.outputs.VERSION }}
+          body: |
+            # Release v${{ steps.get_version.outputs.VERSION }}
+
+            ${{ steps.generate-notes.outputs.changelog }}
+
+            ## Docker Image
+            
+            ## Qualität
+            - Checkstyle: Alle Code-Formatierungen entsprechen den Projektstandards
+            - JaCoCo: Testabdeckung wurde verifiziert
+
+  deploy:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'Staging' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SSH-Schlüssel einrichten
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.DOKKU_SSH_PRIVATE_KEY }}
+
+      - name: Zielhosts vorbereiten
+        run: |
+          if [ "${{ github.event.inputs.environment }}" == "Production" ]; then
+            echo "DOKKU_HOST=${{ secrets.DOKKU_PROD_HOST }}" >> $GITHUB_ENV
+            echo "DOKKU_APP=${{ secrets.DOKKU_PROD_APP_NAME }}" >> $GITHUB_ENV
+          else
+            echo "DOKKU_HOST=${{ secrets.DOKKU_STAGING_HOST }}" >> $GITHUB_ENV
+            echo "DOKKU_APP=${{ secrets.DOKKU_STAGING_APP_NAME }}" >> $GITHUB_ENV
+          fi
+
+      - name: Host-Schlüssel hinzufügen
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan ${{ env.DOKKU_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Docker-Image auf Dokku deployen
+        run: |
+          VERSION="${{ needs.build-and-release.outputs.VERSION }}"
+          ssh dokku@${{ env.DOKKU_HOST }} git:from-image ${{ env.DOKKU_APP }} ghcr.io/${{ github.repository }}:$VERSION
+          echo "Deployed Version $VERSION nach ${{ github.event.inputs.environment }}"

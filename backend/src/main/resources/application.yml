@@ -1,0 +1,20 @@
+application:
+  version: @project.version@
+
+spring:
+  application:
+    name: Template-SpringBoot-VueJS
+
+management:
+  info:
+    env:
+      enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: info,health,metrics
+
+info:
+  app:
+    version: @project.version@
+    name: @project.name@

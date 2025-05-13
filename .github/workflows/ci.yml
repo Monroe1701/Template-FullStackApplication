@@ -1,0 +1,58 @@
+name: CI
+
+# TRIGGER --------------
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'master/**'
+    paths:
+      - 'src/**'
+      - '.github/workflows/ci.yml'
+
+# JOBS -----------------
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      ## CHECKOUT
+      - uses: actions/checkout@v4
+
+      ## SETUP JDK
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      ## SETUP GRADLE
+      - name: Setup Gradle
+        run: gradle/actions/setup-gradle@v3.5
+
+      ## RUN CHECKSTYLE
+      - name: Run Checkstyle
+        run: ./gradlew checkstyleMain checkstyleTest
+
+      - name: Upload Checkstyle report
+        uses: actions/upload-artifact@v3
+        with:
+          name: checkstyle-report
+          path: build/reports/checkstyle/
+
+      ## RUN TEST COVERAGE
+      - name: Tests mit JaCoCo ausführen
+        run: ./gradlew test jacocoTestReport
+
+      - name: JaCoCo-Testabdeckungs-Report hochladen
+        uses: actions/upload-artifact@v3
+        with:
+          name: jacoco-report
+          path: build/reports/jacoco/
+
+      - name: Check JaCoCo test coverage
+        run: ./gradlew jacocoTestCoverageVerification
+
+      ## BUILD
+      - name: Build with Gradle
+        run: ./gradlew build -x test

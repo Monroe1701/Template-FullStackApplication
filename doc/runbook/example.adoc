@@ -1,0 +1,422 @@
+= Runbook: {Anwendungsname} Spring Boot-Anwendung
+:author: {Dein Name}
+:email: {Deine E-Mail}
+:revnumber: 1.0
+:revdate: {Datum}
+:toc: left
+:toclevels: 3
+:sectnums:
+:icons: font
+:source-highlighter: highlightjs
+
+== Übersicht
+
+=== Zweck des Dokuments
+Dieses Runbook enthält Anweisungen für den Betrieb, die Wartung und Fehlerbehebung der {Anwendungsname} Spring Boot-Anwendung, die in Docker-Containern läuft.
+
+=== Systemübersicht
+Eine kurze Beschreibung der Anwendung, ihrer Hauptfunktionen und Zwecke.
+
+=== Architektur
+[plantuml]
+----
+@startuml
+actor "Benutzer" as user
+node "Loadbalancer" as lb
+node "Server" as server {
+  node "Docker" as docker {
+    node "Spring Boot App" as app
+    node "Redis Cache" as redis
+  }
+}
+database "Externe Datenbank" as db
+
+user --> lb
+lb --> app
+app --> redis
+app --> db
+@enduml
+----
+
+=== Kontakte und Zuständigkeiten
+[cols="2,4,4"]
+|===
+| Rolle | Name | Kontakt
+
+| Entwicklungsteam Lead
+| {Name}
+| {E-Mail}, {Telefon}
+
+| Systemadministrator
+| {Name}
+| {E-Mail}, {Telefon}
+
+| DevOps-Ingenieur
+| {Name}
+| {E-Mail}, {Telefon}
+|===
+
+== Umgebungsinformationen
+
+=== Server-Details
+[cols="2,4"]
+|===
+| Eigenschaft | Wert
+
+| Hostname
+| server.example.com
+
+| IP-Adresse
+| 192.168.1.100
+
+| Betriebssystem
+| Ubuntu 22.04 LTS
+
+| Docker-Version
+| 24.0.5
+
+| Docker Compose-Version
+| 2.20.2
+|===
+
+=== Anwendungsdetails
+[cols="2,4"]
+|===
+| Eigenschaft | Wert
+
+| Anwendungsname
+| {Anwendungsname}
+
+| Container-Name
+| spring-app
+
+| Image-Name
+| example/spring-app:1.0.0
+
+| Exposed Ports
+| 8080
+
+| Health-Check-Endpunkt
+| /actuator/health
+|===
+
+=== Datenbankdetails
+[cols="2,4"]
+|===
+| Eigenschaft | Wert
+
+| Datenbanktyp
+| PostgreSQL
+
+| Host
+| db.example.com
+
+| Port
+| 5432
+
+| Datenbank-Name
+| appdb
+
+| Benutzername
+| app_user
+|===
+
+=== Konfiguration
+Die Anwendung wird mit der folgenden Docker Compose-Konfiguration ausgeführt:
+
+[source,yaml]
+----
+version: '3.8'
+services:
+  app:
+    image: example/spring-app:1.0.0
+    container_name: spring-app
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=production
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://db.example.com:5432/appdb
+      - SPRING_DATASOURCE_USERNAME=app_user
+      - SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
+      - REDIS_HOST=redis
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7.0
+    container_name: redis-cache
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+----
+
+== Routineaufgaben
+
+=== Start der Anwendung
+[source,bash]
+----
+# Navigiere zum Verzeichnis mit der Docker Compose-Datei
+cd /opt/spring-app
+
+# Starte die Container
+docker-compose up -d
+
+# Überprüfe, ob die Container laufen
+docker-compose ps
+----
+
+=== Stoppen der Anwendung
+[source,bash]
+----
+# Navigiere zum Verzeichnis mit der Docker Compose-Datei
+cd /opt/spring-app
+
+# Stoppe die Container
+docker-compose down
+
+# Stoppe die Container, aber behalte Volumes (für Wartungsarbeiten)
+docker-compose down --volumes
+----
+
+=== Neustarten der Anwendung
+[source,bash]
+----
+cd /opt/spring-app
+docker-compose restart
+----
+
+=== Aktualisieren der Anwendung
+[source,bash]
+----
+# Ziehe das neue Image
+docker pull example/spring-app:neue-version
+
+# Aktualisiere die docker-compose.yml-Datei mit der neuen Image-Version
+sed -i 's/example\/spring-app:.*$/example\/spring-app:neue-version/' docker-compose.yml
+
+# Starte die Anwendung mit dem neuen Image neu
+docker-compose down
+docker-compose up -d
+
+# Überprüfe den Status
+docker-compose ps
+----
+
+=== Backup und Wiederherstellung
+
+==== Backup der Anwendungsdaten
+[source,bash]
+----
+# Backup von Redis-Daten
+docker exec redis-cache redis-cli SAVE
+docker cp redis-cache:/data/dump.rdb /backup/redis-dump-$(date +%Y%m%d).rdb
+
+# Wenn zusätzliche Volumes existieren:
+docker-compose down
+tar -czvf /backup/app-volumes-$(date +%Y%m%d).tar.gz ./volumes
+docker-compose up -d
+----
+
+==== Wiederherstellung von Backups
+[source,bash]
+----
+# Wiederherstellung von Redis-Daten
+docker-compose down
+cp /backup/redis-dump.rdb ./volumes/redis-data/dump.rdb
+docker-compose up -d
+----
+
+== Überwachung
+
+=== Logs einsehen
+[source,bash]
+----
+# Echtzeit-Logs anzeigen
+docker-compose logs -f
+
+# Logs für einen bestimmten Dienst anzeigen
+docker-compose logs -f app
+
+# Letzte 100 Zeilen der Logs
+docker-compose logs --tail=100 app
+----
+
+=== Performance-Überwachung
+[source,bash]
+----
+# Container-Statistiken anzeigen
+docker stats
+
+# Detaillierte Informationen zum Spring Boot-Container
+docker inspect spring-app
+----
+
+=== Health-Checks
+[source,bash]
+----
+# Spring Boot Actuator Health-Endpunkt prüfen
+curl http://localhost:8080/actuator/health
+
+# Container-Status überprüfen
+docker ps -f name=spring-app
+----
+
+=== Wichtige Kennzahlen
+
+* JVM-Speichernutzung: http://localhost:8080/actuator/metrics/jvm.memory.used
+* HTTP-Anfrage-Statistiken: http://localhost:8080/actuator/metrics/http.server.requests
+* Datenbank-Verbindungs-Pool: http://localhost:8080/actuator/metrics/hikaricp.connections
+
+== Fehlerbehebung
+
+=== Häufige Probleme und Lösungen
+
+==== Anwendung startet nicht
+[cols="2,4"]
+|===
+| Symptom | Lösung
+
+| Container wird erstellt, beendet sich aber sofort
+| Überprüfe die Logs mit `docker-compose logs app`. Häufige Ursachen:
+- Falsche Umgebungsvariablen
+- Datenbank nicht erreichbar
+- Berechtigungsprobleme bei gemounteten Volumes
+
+| Timeouts beim Anwendungsstart
+| Erhöhe die Timeout-Einstellungen in der Docker-Compose-Datei oder überprüfe externe Abhängigkeiten.
+|===
+
+==== Verbindungsprobleme zur Datenbank
+[cols="2,4"]
+|===
+| Symptom | Lösung
+
+| "Could not connect to database" in den Logs
+| - Überprüfe, ob die Datenbank läuft
+- Prüfe die Verbindungsparameter in der docker-compose.yml
+- Teste die Verbindung manuell: `docker exec spring-app curl -v db.example.com:5432`
+|===
+
+==== Speicherlecks oder hohe CPU-Auslastung
+[cols="2,4"]
+|===
+| Symptom | Lösung
+
+| Container nutzt immer mehr Speicher
+| - Thread-Dump erstellen: `docker exec spring-app jcmd 1 Thread.print`
+- Heap-Dump erstellen: `docker exec spring-app jcmd 1 GC.heap_dump /app/heap_dump.hprof`
+- Container mit mehr Ressourcen neustarten: `-e JAVA_OPTS="-Xmx1G -Xms512m"`
+|===
+
+=== Diagnosebefehle
+
+==== Thread-Dumps erzeugen
+[source,bash]
+----
+# Thread-Dump erstellen
+docker exec spring-app jcmd 1 Thread.print > thread_dump.txt
+
+# Mehrere Thread-Dumps mit Intervall erstellen
+for i in {1..3}; do docker exec spring-app jcmd 1 Thread.print > thread_dump_$i.txt; sleep 10; done
+----
+
+==== Heap-Dumps erzeugen
+[source,bash]
+----
+# Heap-Dump erstellen
+docker exec spring-app jcmd 1 GC.heap_dump /app/heap_dump.hprof
+
+# Heap-Dump aus dem Container kopieren
+docker cp spring-app:/app/heap_dump.hprof ./heap_dump.hprof
+----
+
+==== JVM-Einstellungen anzeigen
+[source,bash]
+----
+docker exec spring-app java -XX:+PrintFlagsFinal -version | grep -iE 'heapsize|permsize|threads'
+----
+
+== Disaster Recovery
+
+=== Recovery-Plan
+. System-Status bewerten
+. Kritische Dienste wiederherstellen
+. Daten aus Backups wiederherstellen
+. Systemintegrität verifizieren
+. Überwachung für Folgefehler einrichten
+
+=== Schritte bei vollständigem Systemausfall
+[source,bash]
+----
+# 1. Server neu starten falls nötig
+
+# 2. Docker und Docker Compose installieren (falls nötig)
+apt update && apt install -y docker.io docker-compose
+
+# 3. Anwendungs-Code und Konfiguration wiederherstellen
+git clone https://github.com/example/spring-app.git /opt/spring-app
+cd /opt/spring-app
+
+# 4. Umgebungsvariablen wiederherstellen
+cp /backup/env-file.env ./.env
+
+# 5. Persistente Daten wiederherstellen
+mkdir -p ./volumes
+tar -xzvf /backup/app-volumes-latest.tar.gz -C ./
+
+# 6. Anwendung starten
+docker-compose up -d
+
+# 7. Status überprüfen
+docker-compose ps
+curl http://localhost:8080/actuator/health
+----
+
+== Anhänge
+
+=== Nützliche Docker-Befehle
+[source,bash]
+----
+# Alle Container auflisten
+docker ps -a
+
+# Alle Images auflisten
+docker images
+
+# Nicht verwendete Ressourcen bereinigen
+docker system prune -a
+
+# Container-Logs mit Zeitstempel anzeigen
+docker logs -t spring-app
+----
+
+=== Referenzdokumentation
+
+* Spring Boot-Dokumentation: https://docs.spring.io/spring-boot/docs/current/reference/html/
+* Docker-Dokumentation: https://docs.docker.com/
+* Actuator-Endpunkte: https://docs.spring.io/spring-boot/docs/current/reference/html/actuator.html
+
+=== Change Log
+
+[cols="1,1,2,4"]
+|===
+| Datum | Version | Autor | Änderungen
+
+| 2023-05-01
+| 1.0
+| {Autor}
+| Initiale Version des Runbooks
+
+| 2023-06-15
+| 1.1
+| {Autor}
+| Aktualisierte Backup-Verfahren und Fehlerbehebungsschritte
+|===
