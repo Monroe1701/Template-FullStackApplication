@@ -35,7 +35,7 @@ jobs:
         run: ./gradlew checkstyleMain checkstyleTest
 
       - name: Upload Checkstyle report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: checkstyle-report
           path: build/reports/checkstyle/
@@ -45,7 +45,7 @@ jobs:
         run: ./gradlew test jacocoTestReport
 
       - name: JaCoCo-Testabdeckungs-Report hochladen
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: jacoco-report
           path: build/reports/jacoco/
