@@ -1,0 +1,343 @@
+name: CI/CD Pipeline
+
+# TRIGGERS --------------
+on:
+  # Manual trigger with environment selection
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment Environments'
+        required: true
+        type: choice
+        default: 'preview'
+        options:
+          - preview
+          - production
+  # Automatic trigger on pull requests to master
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, closed]
+
+# ENVIRONMENT VARIABLES --------------
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# JOBS --------------
+jobs:
+  # BUILD AND TEST JOB
+  build-and-test:
+    runs-on: ubuntu-latest
+    # Only run for manual dispatch or non-closed PRs
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+      pr-number: ${{ github.event.number }}
+
+    steps:
+      ## CHECKOUT CODE
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      ## SETUP JAVA ENVIRONMENT
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      ## SETUP GRADLE
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      ## RUN TESTS
+      - name: Run tests
+        run: ./gradlew test
+
+      ## BUILD APPLICATION
+      - name: Build application
+        run: ./gradlew build
+
+      ## GENERATE DOCKER IMAGE TAG
+      - name: Generate image tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.environment }}" == "production" ]; then
+              echo "tag=latest" >> $GITHUB_OUTPUT
+            else
+              echo "tag=preview-$(date +%s)" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "tag=pr-${{ github.event.number }}" >> $GITHUB_OUTPUT
+          fi
+
+      ## SETUP DOCKER
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.tag.outputs.tag }}
+
+      ## BUILD AND PUSH DOCKER IMAGE
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # PREVIEW DEPLOYMENT JOB
+  deploy-preview:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    # Deploy to preview for manual preview selection or any PR event (except closed)
+    if: |
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'preview') ||
+      (github.event_name == 'pull_request' && github.event.action != 'closed')
+    environment:
+      name: preview
+      url: ${{ steps.deploy.outputs.preview-url }}
+
+    steps:
+      ## SETUP SSH CONNECTION
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.DOKKU_SSH_PRIVATE_KEY }}
+
+      - name: Add host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan ${{ vars.DOKKU_PREVIEW_HOST }} >> ~/.ssh/known_hosts
+
+      ## DEPLOY TO PREVIEW ENVIRONMENT
+      - name: Deploy to preview subdomain
+        id: deploy
+        run: |
+          # Determine app name and subdomain based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            APP_NAME="preview-manual"
+            SUBDOMAIN="preview.boardgamejourney.net"
+            IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:preview-$(date +%s)"
+          else
+            PR_NUMBER=${{ github.event.number }}
+            APP_NAME="pr-${PR_NUMBER}"
+            SUBDOMAIN="pr-${PR_NUMBER}.boardgamejourney.net"
+            IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${PR_NUMBER}"
+          fi
+          
+          # Create app if it doesn't exist
+          ssh dokku@${{ vars.DOKKU_PREVIEW_HOST }} "apps:exists ${APP_NAME} || apps:create ${APP_NAME}"
+          
+          # Configure domain
+          ssh dokku@${{ vars.DOKKU_PREVIEW_HOST }} "domains:clear ${APP_NAME}"
+          ssh dokku@${{ vars.DOKKU_PREVIEW_HOST }} "domains:add ${APP_NAME} ${SUBDOMAIN}"
+          
+          # Configure environment variables
+          ssh dokku@${{ vars.DOKKU_PREVIEW_HOST }} "config:set ${APP_NAME} NODE_ENV=development"
+          ssh dokku@${{ vars.DOKKU_PREVIEW_HOST }} "config:set ${APP_NAME} APP_ENV=preview"
+          
+          # Deploy image to Dokku
+          ssh dokku@${{ vars.DOKKU_PREVIEW_HOST }} "git:from-image ${APP_NAME} ${IMAGE_TAG}"
+          
+          # Set output for environment URL
+          echo "preview-url=https://${SUBDOMAIN}" >> $GITHUB_OUTPUT
+          echo "Preview deployed to: https://${SUBDOMAIN}"
+
+      ## NOTIFY PR WITH PREVIEW URL
+      - name: Comment PR with preview URL
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.number;
+            const subdomain = `pr-${prNumber}.boardgamejourney.net`;
+            
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 **Preview Deployment Ready!**
+            
+              **Environment:** Preview
+              **Preview URL:** https://${subdomain}
+              **Commit:** ${context.sha.substring(0, 7)}
+            
+              This preview will be automatically cleaned up when the PR is closed.`
+            });
+
+      ## UPDATE DEPLOYMENT STATUS
+      - name: Update deployment status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            const environment_url = '${{ steps.deploy.outputs.preview-url }}';
+            
+            github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: context.payload.deployment?.id || 0,
+              state: status,
+              environment_url: status === 'success' ? environment_url : undefined,
+              description: status === 'success' ? 'Preview deployment successful' : 'Preview deployment failed'
+            });
+
+  # PRODUCTION DEPLOYMENT JOB
+  deploy-production:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    # Deploy to production for manual production selection or merged PRs
+    if: |
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production') ||
+      (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true)
+    environment:
+      name: production
+      url: https://boardgamejourney.net
+
+    steps:
+      ## SETUP SSH CONNECTION
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.DOKKU_SSH_PRIVATE_KEY }}
+
+      - name: Add host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan ${{ vars.DOKKU_PRODUCTION_HOST }} >> ~/.ssh/known_hosts
+
+      ## DEPLOY TO PRODUCTION ENVIRONMENT
+      - name: Deploy to production
+        id: deploy
+        run: |
+          # Determine image tag based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          else
+            IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.number }}"
+          fi
+          
+          APP_NAME="boardgamejourney"
+          
+          # Configure production environment variables
+          ssh dokku@${{ vars.DOKKU_PRODUCTION_HOST }} "config:set ${APP_NAME} NODE_ENV=production"
+          ssh dokku@${{ vars.DOKKU_PRODUCTION_HOST }} "config:set ${APP_NAME} APP_ENV=production"
+          
+          # Deploy image to production Dokku
+          ssh dokku@${{ vars.DOKKU_PRODUCTION_HOST }} "git:from-image ${APP_NAME} ${IMAGE_TAG}"
+          
+          echo "Production deployed to: https://boardgamejourney.net"
+
+      ## NOTIFY PRODUCTION DEPLOYMENT SUCCESS
+      - name: Create deployment notification
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const deploymentMessage = `🎉 **Production Deployment Successful!**
+            
+            **Environment:** Production
+            **URL:** https://boardgamejourney.net
+            **Commit:** ${context.sha.substring(0, 7)}
+            **Deployed by:** @${context.actor}
+            
+            The application is now live in production.`;
+            
+            // Add comment to PR if this was triggered by PR merge
+            if (context.eventName === 'pull_request') {
+              github.rest.issues.createComment({
+                issue_number: context.payload.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: deploymentMessage
+              });
+            }
+
+      ## UPDATE DEPLOYMENT STATUS
+      - name: Update deployment status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+            
+            github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: context.payload.deployment?.id || 0,
+              state: status,
+              environment_url: status === 'success' ? 'https://boardgamejourney.net' : undefined,
+              description: status === 'success' ? 'Production deployment successful' : 'Production deployment failed'
+            });
+
+  # CLEANUP PREVIEW JOB
+  cleanup-preview:
+    runs-on: ubuntu-latest
+    # Only run when PR is closed (regardless of merge status)
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    environment: preview
+
+    steps:
+      ## SETUP SSH CONNECTION
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.DOKKU_SSH_PRIVATE_KEY }}
+
+      - name: Add host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan ${{ vars.DOKKU_PREVIEW_HOST }} >> ~/.ssh/known_hosts
+
+      ## CLEANUP PREVIEW DEPLOYMENT
+      - name: Cleanup preview deployment
+        run: |
+          PR_NUMBER=${{ github.event.number }}
+          APP_NAME="pr-${PR_NUMBER}"
+          
+          # Check if app exists and destroy it
+          if ssh dokku@${{ vars.DOKKU_PREVIEW_HOST }} "apps:exists ${APP_NAME}"; then
+            ssh dokku@${{ vars.DOKKU_PREVIEW_HOST }} "apps:destroy ${APP_NAME} --force"
+            echo "Cleaned up preview app: ${APP_NAME}"
+          else
+            echo "Preview app ${APP_NAME} does not exist, nothing to clean up"
+          fi
+
+      ## NOTIFY CLEANUP COMPLETION
+      - name: Comment cleanup status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.number;
+            
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🧹 **Preview Environment Cleaned Up**
+            
+              The preview deployment \`pr-${prNumber}.boardgamejourney.net\` has been automatically removed.`
+            });

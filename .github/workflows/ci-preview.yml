@@ -1,0 +1,185 @@
+# CD Pipeline for Preview Deployments
+# Handles automatic preview deployments for PRs and manual cleanup
+name: CD - Preview Deployment
+
+# GLOBAL ENVIRONMENT VARIABLES --------------
+env:
+  DOKKU_HOST: ${{ vars.DOKKU_PREVIEW_HOST }}
+  DOKKU_SSH_KEY: ${{ secrets.DOKKU_SSH_PRIVATE_KEY }}
+  BASE_DOMAIN: boardgamejourney.net
+
+# TRIGGERS --------------
+on:
+  # Manual trigger with environment selection
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - production
+      pr_number:
+        description: 'PR number for preview deployment'
+        required: false
+        type: string
+  
+  # Triggered when CI workflow completes successfully
+  workflow_run:
+    workflows: [ "CI - Build and Test" ]
+    types: [ completed ]
+    branches: [ master ]
+  
+  # Triggered when PR is closed for cleanup
+  pull_request:
+    branches: [ master ]
+    types: [ closed ]
+
+# JOBS --------------
+jobs:
+  # PREVIEW DEPLOYMENT JOB
+  deploy-preview:
+    runs-on: ubuntu-latest
+    # Only run when CI workflow completed successfully for a PR
+    if: |
+      github.event_name == 'workflow_run' && 
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    environment: preview
+    env:
+      PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number || github.event.number }}
+    
+    steps:
+      ## EXTRACT PR INFORMATION
+      - name: Extract PR information
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Get PR details from workflow run context
+            const prNumber = context.payload.workflow_run.pull_requests[0]?.number;
+            const headRef = context.payload.workflow_run.head_branch;
+            
+            if (!prNumber) {
+              core.setFailed('Could not determine PR number');
+              return;
+            }
+            
+            // Generate consistent naming for app and subdomain
+            const appName = `pr-${prNumber}`;
+            const subdomain = `${appName}.${{ env.BASE_DOMAIN }}`;
+            
+            // Set outputs for use in subsequent steps
+            core.setOutput('number', prNumber);
+            core.setOutput('head-ref', headRef);
+            core.setOutput('app-name', appName);
+            core.setOutput('subdomain', subdomain);
+
+      ## CHECKOUT CODE
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.head-ref }}
+          fetch-depth: '0'
+
+      ## SETUP SSH CONNECTION
+      - name: Configure SSH and deploy
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ env.DOKKU_SSH_KEY }}
+
+      ## DEPLOY TO DOKKU
+      - name: Deploy to preview with Dokku
+        uses: dokku/github-action@master
+        with:
+          branch: ${{ steps.pr-info.outputs.head-ref }}
+          git_remote_url: ssh://dokku@${{ env.DOKKU_HOST }}:22/${{ steps.pr-info.outputs.app-name }}
+          ssh_private_key: ${{ env.DOKKU_SSH_KEY }}
+
+      ## CONFIGURE PREVIEW ENVIRONMENT
+      - name: Configure preview environment
+        run: |
+          # Add Dokku host to known hosts for SSH connection
+          ssh-keyscan ${{ env.DOKKU_HOST }} >> ~/.ssh/known_hosts
+          
+          # Extract variables for easier readability
+          APP_NAME="${{ steps.pr-info.outputs.app-name }}"
+          SUBDOMAIN="${{ steps.pr-info.outputs.subdomain }}"
+          
+          # Configure custom domain for the preview app
+          ssh dokku@${{ env.DOKKU_HOST }} "domains:clear ${APP_NAME} && domains:add ${APP_NAME} ${SUBDOMAIN}"
+          
+          # Set environment variables for preview deployment
+          ssh dokku@${{ env.DOKKU_HOST }} "config:set ${APP_NAME} NODE_ENV=development APP_ENV=preview"
+
+      ## NOTIFY PR WITH PREVIEW URL
+      - name: Comment PR with preview URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Extract outputs from previous step
+            const { number: prNumber, 'head-ref': headRef, subdomain } = ${{ steps.pr-info.outputs }};
+            
+            // Create informative comment on the PR
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 **Preview Deployment Ready!**
+            
+              **Environment:** Preview
+              **Preview URL:** https://${subdomain}
+              **Branch:** ${headRef}
+              **Commit:** ${context.sha.substring(0, 7)}
+            
+              This preview will be automatically cleaned up when the PR is closed.`
+            });
+
+  # CLEANUP PREVIEW JOB
+  cleanup-preview:
+    runs-on: ubuntu-latest
+    # Only run when PR is closed (regardless of merge status)
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    environment: preview
+    env:
+      APP_NAME: pr-${{ github.event.number }}
+    
+    steps:
+      ## SETUP SSH CONNECTION
+      - name: Configure SSH and cleanup preview
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ env.DOKKU_SSH_KEY }}
+
+      ## REMOVE PREVIEW DEPLOYMENT
+      - name: Remove preview deployment
+        run: |
+          # Add Dokku host to known hosts for SSH connection
+          ssh-keyscan ${{ env.DOKKU_HOST }} >> ~/.ssh/known_hosts
+          
+          # Check if preview app exists before attempting to destroy it
+          if ssh dokku@${{ env.DOKKU_HOST }} "apps:exists ${{ env.APP_NAME }}"; then
+            ssh dokku@${{ env.DOKKU_HOST }} "apps:destroy ${{ env.APP_NAME }} --force"
+            echo "✅ Cleaned up preview app: ${{ env.APP_NAME }}"
+          else
+            echo "ℹ️ Preview app ${{ env.APP_NAME }} does not exist, nothing to clean up"
+          fi
+
+      ## NOTIFY CLEANUP COMPLETION
+      - name: Comment cleanup status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.number;
+            
+            // Notify that cleanup was completed
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🧹 **Preview Environment Cleaned Up**
+            
+              The preview deployment \`pr-${prNumber}.${{ env.BASE_DOMAIN }}\` has been automatically removed.`
+            });
