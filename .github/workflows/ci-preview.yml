@@ -55,7 +55,7 @@ jobs:
       ## EXTRACT PR INFORMATION
       - name: Extract PR information
         id: pr-info
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             // Get PR details from workflow run context
@@ -116,7 +116,7 @@ jobs:
 
       ## NOTIFY PR WITH PREVIEW URL
       - name: Comment PR with preview URL
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             // Extract outputs from previous step
@@ -169,7 +169,7 @@ jobs:
 
       ## NOTIFY CLEANUP COMPLETION
       - name: Comment cleanup status
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const prNumber = context.payload.number;
