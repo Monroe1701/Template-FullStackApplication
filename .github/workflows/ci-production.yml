@@ -22,7 +22,7 @@ jobs:
           echo "head-sha=${{ github.event.pull_request.head.sha }}" >> $GITHUB_OUTPUT
 
       - name: Checkout PR code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ steps.pr-info.outputs.head-sha }}
 
