@@ -79,7 +79,7 @@ jobs:
 
       ## CHECKOUT CODE
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ steps.pr-info.outputs.head-ref }}
           fetch-depth: '0'
